@@ -301,14 +301,19 @@ export async function POST(request) {
         return NextResponse.json({ error: result.message }, { status: result.status })
       }
 
+      // Debug: Log the raw result
+      console.log('Lifestyle API Raw Result:', JSON.stringify(result, null, 2))
+
       // Save job to database
       const job = await saveJob(db, userId, 'lifestyle-text', input, result, 'completed')
       
       // Format response to match expected structure
       const response = {
         result_urls: result.result && result.result[0] && result.result[0].urls ? result.result[0].urls : 
-                    result.result_urls ? result.result_urls : [],
-        jobId: job.id
+                    result.result_urls ? result.result_urls : 
+                    result.urls ? result.urls : [],
+        jobId: job.id,
+        debug_result: result // Temporary debug info
       }
       
       return NextResponse.json(response)
