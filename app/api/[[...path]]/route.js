@@ -275,7 +275,12 @@ export async function POST(request) {
       // Save job to database
       await saveJob(db, userId, 'prompt-enhance', input, result, 'completed')
       
-      return NextResponse.json(result)
+      // Format response to match expected structure
+      const response = {
+        enhanced_prompt: result['prompt variations'] || result.enhanced_prompt || input.prompt
+      }
+      
+      return NextResponse.json(response)
     }
 
     // Lifestyle by Text
