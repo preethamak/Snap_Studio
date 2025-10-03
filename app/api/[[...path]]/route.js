@@ -327,7 +327,13 @@ export async function POST(request) {
       // Save job to database
       const job = await saveJob(db, userId, 'erase-foreground', { imageUrl }, result, 'completed')
       
-      return NextResponse.json({ ...result, jobId: job.id })
+      // Format response to match expected structure
+      const response = {
+        result_urls: result.result_url ? [result.result_url] : [],
+        jobId: job.id
+      }
+      
+      return NextResponse.json(response)
     }
 
     return NextResponse.json({ error: 'Not found' }, { status: 404 })
