@@ -308,12 +308,19 @@ export async function POST(request) {
       const job = await saveJob(db, userId, 'lifestyle-text', input, result, 'completed')
       
       // Format response to match expected structure
+      let resultUrls = []
+      if (result.result && Array.isArray(result.result)) {
+        resultUrls = result.result.map(item => {
+          if (Array.isArray(item) && item.length > 0) {
+            return item[0] // First element is the URL
+          }
+          return null
+        }).filter(url => url !== null)
+      }
+      
       const response = {
-        result_urls: result.result && result.result[0] && result.result[0].urls ? result.result[0].urls : 
-                    result.result_urls ? result.result_urls : 
-                    result.urls ? result.urls : [],
-        jobId: job.id,
-        debug_result: result // Temporary debug info
+        result_urls: resultUrls,
+        jobId: job.id
       }
       
       return NextResponse.json(response)
