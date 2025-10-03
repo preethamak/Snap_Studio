@@ -289,8 +289,8 @@ export async function POST(request) {
       const userId = body.userId || 'anonymous'
 
       const briaData = {
-        prompt: input.prompt,
-        product_image_url: input.productImageUrl,
+        image_url: input.productImageUrl,
+        scene_description: input.prompt,
         num_results: input.numResults,
         sync: input.sync
       }
