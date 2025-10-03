@@ -304,7 +304,14 @@ export async function POST(request) {
       // Save job to database
       const job = await saveJob(db, userId, 'lifestyle-text', input, result, 'completed')
       
-      return NextResponse.json({ ...result, jobId: job.id })
+      // Format response to match expected structure
+      const response = {
+        result_urls: result.result && result.result[0] && result.result[0].urls ? result.result[0].urls : 
+                    result.result_urls ? result.result_urls : [],
+        jobId: job.id
+      }
+      
+      return NextResponse.json(response)
     }
 
     // Erase Foreground
