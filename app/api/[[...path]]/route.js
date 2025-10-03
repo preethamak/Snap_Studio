@@ -1,104 +1,340 @@
+import { NextResponse } from 'next/server'
+import { z } from 'zod'
 import { MongoClient } from 'mongodb'
 import { v4 as uuidv4 } from 'uuid'
-import { NextResponse } from 'next/server'
 
 // MongoDB connection
-let client
-let db
+let cachedClient = null
+let cachedDb = null
 
-async function connectToMongo() {
-  if (!client) {
-    client = new MongoClient(process.env.MONGO_URL)
-    await client.connect()
-    db = client.db(process.env.DB_NAME)
+async function connectToDatabase() {
+  if (cachedClient && cachedDb) {
+    return { client: cachedClient, db: cachedDb }
   }
-  return db
+
+  const client = new MongoClient(process.env.MONGO_URL)
+  await client.connect()
+  const db = client.db(process.env.DB_NAME)
+
+  cachedClient = client
+  cachedDb = db
+  return { client, db }
 }
 
-// Helper function to handle CORS
-function handleCORS(response) {
-  response.headers.set('Access-Control-Allow-Origin', process.env.CORS_ORIGINS || '*')
-  response.headers.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
-  response.headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization')
-  response.headers.set('Access-Control-Allow-Credentials', 'true')
-  return response
+// Validation schemas
+const hdGenerationSchema = z.object({
+  prompt: z.string().min(1),
+  modelVersion: z.string().default('2.2'),
+  numResults: z.number().int().min(1).max(4).default(1),
+  aspectRatio: z.string().default('1:1'),
+  sync: z.boolean().default(true),
+  seed: z.number().int().optional(),
+  negativePrompt: z.string().optional(),
+  stepsNum: z.number().int().min(20).max(50).optional(),
+  textGuidanceScale: z.number().min(1).max(10).optional(),
+  medium: z.enum(['photography', 'art']).optional(),
+  promptEnhancement: z.boolean().default(false),
+  enhanceImage: z.boolean().default(false),
+  contentModeration: z.boolean().default(true),
+  ipSignal: z.boolean().default(false)
+})
+
+const promptEnhanceSchema = z.object({
+  prompt: z.string().min(1)
+})
+
+const lifestyleByTextSchema = z.object({
+  prompt: z.string().min(1),
+  productImageUrl: z.string().url(),
+  numResults: z.number().int().min(1).max(4).default(1),
+  sync: z.boolean().default(true)
+})
+
+const userSchema = z.object({
+  email: z.string().email(),
+  password: z.string().min(6),
+  name: z.string().optional()
+})
+
+const loginSchema = z.object({
+  email: z.string().email(),
+  password: z.string().min(6)
+})
+
+// Helper functions
+async function callBriaAPI(endpoint, data, method = 'POST') {
+  try {
+    const response = await fetch(`https://engine.prod.bria-api.com${endpoint}`, {
+      method,
+      headers: {
+        'api_token': process.env.BRIA_API_KEY,
+        'Accept': 'application/json',
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(data)
+    })
+
+    const responseText = await response.text()
+    
+    if (!response.ok) {
+      console.error(`Bria API Error: ${response.status} - ${responseText}`)
+      return {
+        error: true,
+        status: response.status,
+        message: responseText || 'Bria API Error'
+      }
+    }
+
+    return JSON.parse(responseText)
+  } catch (error) {
+    console.error('Bria API Call Error:', error)
+    return {
+      error: true,
+      status: 500,
+      message: error.message || 'API Call Failed'
+    }
+  }
 }
 
-// OPTIONS handler for CORS
-export async function OPTIONS() {
-  return handleCORS(new NextResponse(null, { status: 200 }))
+async function saveJob(db, userId, jobType, input, output = null, status = 'pending') {
+  const job = {
+    id: uuidv4(),
+    userId,
+    jobType,
+    input,
+    output,
+    status,
+    createdAt: new Date(),
+    updatedAt: new Date()
+  }
+
+  await db.collection('jobs').insertOne(job)
+  return job
 }
 
-// Route handler function
-async function handleRoute(request, { params }) {
-  const { path = [] } = params
-  const route = `/${path.join('/')}`
-  const method = request.method
+async function hashPassword(password) {
+  // Simple hash for demo - use bcrypt in production
+  const encoder = new TextEncoder()
+  const data = encoder.encode(password + 'neonframe_salt')
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data)
+  const hashArray = Array.from(new Uint8Array(hashBuffer))
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('')
+}
+
+// Main API handler
+export async function GET(request) {
+  const { pathname, searchParams } = new URL(request.url)
+  const segments = pathname.replace('/api/', '').split('/').filter(Boolean)
 
   try {
-    const db = await connectToMongo()
+    const { db } = await connectToDatabase()
 
-    // Root endpoint - GET /api/root (since /api/ is not accessible with catch-all)
-    if (route === '/root' && method === 'GET') {
-      return handleCORS(NextResponse.json({ message: "Hello World" }))
-    }
-    // Root endpoint - GET /api/root (since /api/ is not accessible with catch-all)
-    if (route === '/' && method === 'GET') {
-      return handleCORS(NextResponse.json({ message: "Hello World" }))
-    }
-
-    // Status endpoints - POST /api/status
-    if (route === '/status' && method === 'POST') {
-      const body = await request.json()
-      
-      if (!body.client_name) {
-        return handleCORS(NextResponse.json(
-          { error: "client_name is required" }, 
-          { status: 400 }
-        ))
+    // Get user jobs
+    if (segments[0] === 'jobs' && segments[1] === 'user') {
+      const userId = searchParams.get('userId')
+      if (!userId) {
+        return NextResponse.json({ error: 'User ID required' }, { status: 400 })
       }
 
-      const statusObj = {
-        id: uuidv4(),
-        client_name: body.client_name,
-        timestamp: new Date()
-      }
-
-      await db.collection('status_checks').insertOne(statusObj)
-      return handleCORS(NextResponse.json(statusObj))
-    }
-
-    // Status endpoints - GET /api/status
-    if (route === '/status' && method === 'GET') {
-      const statusChecks = await db.collection('status_checks')
-        .find({})
-        .limit(1000)
+      const jobs = await db.collection('jobs')
+        .find({ userId })
+        .sort({ createdAt: -1 })
+        .limit(50)
         .toArray()
 
-      // Remove MongoDB's _id field from response
-      const cleanedStatusChecks = statusChecks.map(({ _id, ...rest }) => rest)
-      
-      return handleCORS(NextResponse.json(cleanedStatusChecks))
+      return NextResponse.json({ jobs })
     }
 
-    // Route not found
-    return handleCORS(NextResponse.json(
-      { error: `Route ${route} not found` }, 
-      { status: 404 }
-    ))
+    // Check URL status (for async results)
+    if (segments[0] === 'check-url') {
+      const url = searchParams.get('url')
+      if (!url) {
+        return NextResponse.json({ error: 'URL required' }, { status: 400 })
+      }
 
+      try {
+        const response = await fetch(url, { method: 'HEAD' })
+        return NextResponse.json({ ready: response.ok })
+      } catch {
+        return NextResponse.json({ ready: false })
+      }
+    }
+
+    return NextResponse.json({ error: 'Not found' }, { status: 404 })
   } catch (error) {
     console.error('API Error:', error)
-    return handleCORS(NextResponse.json(
-      { error: "Internal server error" }, 
-      { status: 500 }
-    ))
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }
 
-// Export all HTTP methods
-export const GET = handleRoute
-export const POST = handleRoute
-export const PUT = handleRoute
-export const DELETE = handleRoute
-export const PATCH = handleRoute
+export async function POST(request) {
+  const { pathname } = new URL(request.url)
+  const segments = pathname.replace('/api/', '').split('/').filter(Boolean)
+
+  try {
+    const { db } = await connectToDatabase()
+    const body = await request.json()
+
+    // User registration
+    if (segments[0] === 'auth' && segments[1] === 'register') {
+      const input = userSchema.parse(body)
+      
+      // Check if user exists
+      const existingUser = await db.collection('users').findOne({ email: input.email })
+      if (existingUser) {
+        return NextResponse.json({ error: 'User already exists' }, { status: 409 })
+      }
+
+      // Create user
+      const hashedPassword = await hashPassword(input.password)
+      const user = {
+        id: uuidv4(),
+        email: input.email,
+        password: hashedPassword,
+        name: input.name || input.email.split('@')[0],
+        createdAt: new Date(),
+        credits: 100 // Free credits
+      }
+
+      await db.collection('users').insertOne(user)
+      const { password, ...userResponse } = user
+      return NextResponse.json({ user: userResponse })
+    }
+
+    // User login
+    if (segments[0] === 'auth' && segments[1] === 'login') {
+      const input = loginSchema.parse(body)
+      const hashedPassword = await hashPassword(input.password)
+      
+      const user = await db.collection('users').findOne({
+        email: input.email,
+        password: hashedPassword
+      })
+
+      if (!user) {
+        return NextResponse.json({ error: 'Invalid credentials' }, { status: 401 })
+      }
+
+      const { password, ...userResponse } = user
+      return NextResponse.json({ user: userResponse })
+    }
+
+    // HD Image Generation
+    if (segments[0] === 'bria' && segments[1] === 'hd-generation') {
+      const input = hdGenerationSchema.parse(body)
+      const userId = body.userId || 'anonymous'
+
+      const briaData = {
+        prompt: input.prompt,
+        num_results: input.numResults,
+        sync: input.sync,
+        negative_prompt: input.negativePrompt || '',
+        aspect_ratio: input.aspectRatio,
+        seed: input.seed,
+        steps_num: input.stepsNum,
+        text_guidance_scale: input.textGuidanceScale,
+        medium: input.medium,
+        prompt_enhancement: input.promptEnhancement || undefined,
+        enhance_image: input.enhanceImage || undefined,
+        content_moderation: input.contentModeration || undefined,
+        ip_signal: input.ipSignal || undefined
+      }
+
+      const result = await callBriaAPI(`/v1/text-to-image/hd/${input.modelVersion}`, briaData)
+      
+      if (result.error) {
+        return NextResponse.json({ error: result.message }, { status: result.status })
+      }
+
+      // Save job to database
+      const job = await saveJob(db, userId, 'hd-generation', input, result, 'completed')
+      
+      return NextResponse.json({ 
+        ...result, 
+        jobId: job.id,
+        enhancedPrompt: result.enhanced_prompt || input.prompt
+      })
+    }
+
+    // Prompt Enhancement
+    if (segments[0] === 'bria' && segments[1] === 'prompt-enhance') {
+      const input = promptEnhanceSchema.parse(body)
+      const userId = body.userId || 'anonymous'
+
+      const result = await callBriaAPI('/v1/prompt_enhancer', { prompt: input.prompt })
+      
+      if (result.error) {
+        return NextResponse.json({ error: result.message }, { status: result.status })
+      }
+
+      // Save job to database
+      await saveJob(db, userId, 'prompt-enhance', input, result, 'completed')
+      
+      return NextResponse.json(result)
+    }
+
+    // Lifestyle by Text
+    if (segments[0] === 'bria' && segments[1] === 'lifestyle-text') {
+      const input = lifestyleByTextSchema.parse(body)
+      const userId = body.userId || 'anonymous'
+
+      const briaData = {
+        prompt: input.prompt,
+        product_image_url: input.productImageUrl,
+        num_results: input.numResults,
+        sync: input.sync
+      }
+
+      const result = await callBriaAPI('/v1/product/lifestyle_shot_by_text', briaData)
+      
+      if (result.error) {
+        return NextResponse.json({ error: result.message }, { status: result.status })
+      }
+
+      // Save job to database
+      const job = await saveJob(db, userId, 'lifestyle-text', input, result, 'completed')
+      
+      return NextResponse.json({ ...result, jobId: job.id })
+    }
+
+    // Erase Foreground
+    if (segments[0] === 'bria' && segments[1] === 'erase-foreground') {
+      const { imageUrl, userId = 'anonymous' } = body
+      
+      if (!imageUrl) {
+        return NextResponse.json({ error: 'Image URL required' }, { status: 400 })
+      }
+
+      const result = await callBriaAPI('/v1/erase_foreground', {
+        image_url: imageUrl,
+        sync: true
+      })
+      
+      if (result.error) {
+        return NextResponse.json({ error: result.message }, { status: result.status })
+      }
+
+      // Save job to database
+      const job = await saveJob(db, userId, 'erase-foreground', { imageUrl }, result, 'completed')
+      
+      return NextResponse.json({ ...result, jobId: job.id })
+    }
+
+    return NextResponse.json({ error: 'Not found' }, { status: 404 })
+  } catch (error) {
+    if (error.name === 'ZodError') {
+      return NextResponse.json({ error: 'Invalid input', details: error.errors }, { status: 400 })
+    }
+    
+    console.error('API Error:', error)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+  }
+}
+
+export async function PUT(request) {
+  return NextResponse.json({ error: 'Method not implemented' }, { status: 501 })
+}
+
+export async function DELETE(request) {
+  return NextResponse.json({ error: 'Method not implemented' }, { status: 501 })
+}
