@@ -249,11 +249,16 @@ export async function POST(request) {
       // Save job to database
       const job = await saveJob(db, userId, 'hd-generation', input, result, 'completed')
       
-      return NextResponse.json({ 
-        ...result, 
+      // Format response to match expected structure
+      const response = {
+        result_urls: result.result && result.result[0] && result.result[0].urls ? result.result[0].urls : [],
+        enhanced_prompt: result.result && result.result[0] && result.result[0].enhanced_prompt ? result.result[0].enhanced_prompt : input.prompt,
         jobId: job.id,
-        enhancedPrompt: result.enhanced_prompt || input.prompt
-      })
+        seed: result.result && result.result[0] && result.result[0].seed ? result.result[0].seed : null,
+        uuid: result.result && result.result[0] && result.result[0].uuid ? result.result[0].uuid : null
+      }
+      
+      return NextResponse.json(response)
     }
 
     // Prompt Enhancement
