@@ -301,9 +301,6 @@ export async function POST(request) {
         return NextResponse.json({ error: result.message }, { status: result.status })
       }
 
-      // Debug: Log the raw result
-      console.log('Lifestyle API Raw Result:', JSON.stringify(result, null, 2))
-
       // Save job to database
       const job = await saveJob(db, userId, 'lifestyle-text', input, result, 'completed')
       
